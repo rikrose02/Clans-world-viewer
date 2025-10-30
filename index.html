@@ -20,6 +20,18 @@
 <canvas id="c"></canvas>
 
 <script type="module">
+<script>
+  // Show JS errors on the page
+  (function(){
+    const box = document.createElement('pre');
+    box.style.cssText = 'position:fixed;bottom:12px;left:12px;right:12px;max-height:45%;overflow:auto;padding:10px;background:rgba(0,0,0,.75);color:#ff8;z-index:9999;font:12px/1.4 -apple-system,monospace;border:1px solid #884;border-radius:8px';
+    box.textContent = 'Loading…';
+    document.addEventListener('DOMContentLoaded',()=>document.body.appendChild(box));
+    function log(msg){ box.textContent = (box.textContent?box.textContent+'\n':'') + msg; }
+    window.onerror = (m,s,l,c,e)=>{ log('Error: '+m+' @ '+s+':'+l); if(e&&e.stack) log(e.stack); };
+    window.addEventListener('unhandledrejection',ev=>{ log('Promise rejection: '+ev.reason); });
+  })();
+</script>
 import * as THREE from 'https://unpkg.com/three@0.157.0/build/three.module.js';
 import {OrbitControls} from 'https://unpkg.com/three@0.157.0/examples/jsm/controls/OrbitControls.js';
 import GUI from 'https://cdn.jsdelivr.net/npm/lil-gui@0.18/+esm';
