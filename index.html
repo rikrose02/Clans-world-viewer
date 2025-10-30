@@ -18,8 +18,6 @@
 <div id="hud">Clans of the Wild — Mobile Viewer<br/>Pinch to zoom • Drag to look • Two-finger drag to pan</div>
 <div id="hint">Tap panel → change Season / Weather / Time</div>
 <canvas id="c"></canvas>
-
-<script type="module">
 <script>
   // Show JS errors on the page
   (function(){
@@ -32,6 +30,7 @@
     window.addEventListener('unhandledrejection',ev=>{ log('Promise rejection: '+ev.reason); });
   })();
 </script>
+<script type="module">
 import * as THREE from 'https://unpkg.com/three@0.157.0/build/three.module.js';
 import {OrbitControls} from 'https://unpkg.com/three@0.157.0/examples/jsm/controls/OrbitControls.js';
 import GUI from 'https://cdn.jsdelivr.net/npm/lil-gui@0.18/+esm';
@@ -52,11 +51,10 @@ const P = {
 };
 
 // Renderer
-const canvas = document.getElementById('c');
-const renderer = new THREE.WebGLRenderer({canvas, antialias:true, powerPreference:'high-performance'});
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-function fit(){ renderer.setSize(innerWidth, innerHeight); camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix(); }
-addEventListener('resize', fit, {passive:true});
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.getElementById('c').appendChild(renderer.domElement);
 
 // Scene & Camera
 const scene = new THREE.Scene();
