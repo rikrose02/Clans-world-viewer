@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Clans of the Wild — Mobile World Viewer</title>
+<style>
+  html,body{margin:0;height:100%;background:#0a0d16;overflow:hidden;-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+  #hud{position:fixed;left:10px;top:10px;color:#d8e1ff;font-family:system-ui,-apple-system,Segoe UI,Roboto,Inter,Arial;font-size:12px;
+       background:rgba(10,13,22,.55);padding:8px 10px;border:1px solid rgba(50,60,100,.55);border-radius:10px;backdrop-filter:blur(6px);z-index:10}
+  #hint{position:fixed;bottom:10px;left:50%;transform:translateX(-50%);color:#bcd4ff;font:12px system-ui;opacity:.8;z-index:10;
+        background:rgba(10,13,22,.4);padding:6px 10px;border-radius:8px;border:1px solid rgba(70,80,120,.45)}
+  canvas{touch-action:none}
+  .lil-gui{--background-color:rgba(15,18,32,.85);--text-color:#dbe6ff;--title-background-color:#192142;--title-text-color:#bfe9ff;--widget-color:#283257}
+</style>
+</head>
+<body>
+<div id="hud">Clans of the Wild — Mobile Viewer<br/>Pinch to zoom • Drag to look • Two-finger drag to pan</div>
+<div id="hint">Tap panel → change Season / Weather / Time</div>
+<canvas id="c"></canvas>
+
+<script type="module">
+import * as THREE from 'https://unpkg.com/three@0.157.0/build/three.module.js';
+import {OrbitControls} from 'https://unpkg.com/three@0.157.0/examples/jsm/controls/OrbitControls.js';
+import GUI from 'https://cdn.jsdelivr.net/npm/lil-gui@0.18/+esm';
+import { createNoise2D } from 'https://unpkg.com/simplex-noise@4.0.1/dist/esm/simplex-noise.js';
+
+// Params
+const P = {
+  seed: (Math.random()*1e9)>>>0,
+  size: 800,
+  res: 240,
+  elevationScale: 55,
+  seaLevel: 0.40,
+  moistureBias: 0.0,
+  timeOfDay: 0.32, // 0 dawn → 1 night
+  season: 'Summer', // Spring, Summer, Autumn, Winter
+  weather: 'Clear', // Clear, Rain, Snow, Storm
+  fogOfWar: false
+};
+
+// Renderer
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({canvas, antialias:true, powerPreference:'high-performance'});
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+function fit(){ renderer.setSize(innerWidth, innerHeight); camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix(); }
+addEventListener('resize', fit, {passive:true});
+
+// Scene & Camera
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 5000);
+camera.position.set(220, 220, 260);
+
+// Controls (touch friendly)
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.maxPolarAngle = Math.PI*0.495;
+controls.target.set(0, 20, 0);
+
+// Lights
+const sun = new THREE.DirectionalLight(0xfff2cc, 2.2);
+sun.position.set(600, 500, 300);
+scene.add(sun);
+scene.add(new THREE.AmbientLight(0x3a4b6a, 0.55));
+
+// Sky dome shader
+const skyGeo = new THREE.SphereGeometry(4200, 32, 16);
+const skyMat = new THREE.ShaderMaterial({
+  side: THREE.BackSide,
+  transparent:false,
+  uniforms:{
+    t:{value:P.timeOfDay}
+  },
+  vertexShader:`varying vec3 vPos; void main(){ vPos=position; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
+  fragmentShader:`
+    uniform float t; varying vec3 vPos;
+    void main(){
+      float h = normalize(vPos).y*0.5+0.5;
+      vec3 dayTop    = vec3(0.50,0.72,0.95);
+      vec3 dayBottom = vec3(0.98,0.90,0.70);
+      vec3 nightTop  = vec3(0.03,0.06,0.14);
+      vec3 nightBottom=vec3(0.05,0.08,0.12);
+      vec3 cTop = mix(dayTop, nightTop, t);
+      vec3 cBot = mix(dayBottom, nightBottom, t);
+      vec3 col = mix(cBot, cTop, smoothstep(0.0,1.0,h));
+      gl_FragColor = vec4(col,1.0);
+    }`
+});
+const sky = new THREE.Mesh(skyGeo, skyMat);
+scene.add(sky);
+
+// Clouds (simple billboards)
+const cloudGeo = new THREE.PlaneGeometry(800, 400);
+const cloudMat = new THREE.MeshBasicMaterial({color:0xffffff, transparent:true, opacity:0.10, depthWrite:false});
+const clouds = new THREE.Mesh(cloudGeo, cloudMat);
+clouds.position.set(0, 260, -100);
+clouds.rotation.x = -0.25;
+scene.add(clouds);
+
+// Noise
+const noise2D = createNoise2D(() => {
+  let t = P.seed += 0x6D2B79F5;
+  t = Math.imul(t ^ t >>> 15, t | 1);
+  t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+  return ((t ^ t >>> 14) >>> 0) / 4294967296;
+});
+
+// Terrain
+let world = null;
+function rebuild(){
+  if (world){ scene.remove(world.group); world.dispose?.(); world=null; }
+  const group = new THREE.Group();
+
+  // Terrain mesh
+  const size = P.size, res = P.res;
+  const geo = new THREE.PlaneGeometry(size, size, res, res);
+  geo.rotateX(-Math.PI/2);
+  const pos = geo.attributes.position;
+  const col = new Float32Array((res+1)*(res+1)*3);
+
+  const cTmp = new THREE.Color();
+  for (let i=0;i<pos.count;i++){
+    const x = pos.getX(i), z = pos.getZ(i);
+    const nx = x/size*1.1, nz = z/size*1.1;
+
+    const e = 0.55*noise2D(nx*1.2, nz*1.2) + 0.30*noise2D(nx*2.4, nz*2.4) + 0.15*noise2D(nx*4.8, nz*4.8);
+    const rim = 1.0 - smoothstep(0.65,1.06, Math.hypot(nx,nz));
+    const elevN = (e*0.5+0.5)*rim;
+    const height = (elevN - P.seaLevel) * P.elevationScale;
+    pos.setY(i, height);
+
+    // Moisture
+    const m = (noise2D(nx*0.7+100, nz*0.7+100)*0.5+0.5) + P.moistureBias;
+
+    // Season palette
+    const pal = palettes[P.season];
+    const mountain = smoothstep(0.60,0.88,elevN);
+    const grass = smoothstep(P.seaLevel, P.seaLevel+0.22, elevN) * (1.0 - mountain);
+    const jungle = grass * smoothstep(0.35,0.82, m);
+    const savannah = grass * (1.0 - smoothstep(0.45,0.75, m));
+    const snow = smoothstep(0.86,0.98, elevN);
+
+    cTmp.copy(pal.forest);
+    cTmp.lerp(pal.jungle, jungle);
+    cTmp.lerp(pal.savannah, savannah*0.9);
+    cTmp.lerp(pal.rock, mountain*0.85);
+    cTmp.lerp(pal.snow, snow*0.95);
+
+    col[i*3+0]=cTmp.r; col[i*3+1]=cTmp.g; col[i*3+2]=cTmp.b;
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(col,3));
+  const mat = new THREE.MeshStandardMaterial({vertexColors:true, roughness:1.0, metalness:0.0, flatShading:true});
+  const terrain = new THREE.Mesh(geo, mat);
+  terrain.receiveShadow = true;
+  group.add(terrain);
+
+  // Water
+  const wGeo = new THREE.PlaneGeometry(size*1.04, size*1.04, 1, 1);
+  wGeo.rotateX(-Math.PI/2);
+  const wMat = new THREE.MeshPhysicalMaterial({color:0x3b86b3, roughness:0.8, metalness:0.0, transparent:true, opacity:0.70});
+  const water = new THREE.Mesh(wGeo, wMat);
+  water.position.y = (0 - P.seaLevel)*P.elevationScale + 0.1;
+  group.add(water);
+
+  // Fog-of-war ring
+  const fogGeo = new THREE.RingGeometry(size*0.45, size*0.52, 64);
+  const fogMat = new THREE.MeshBasicMaterial({color:0x0a0d16, transparent:true, opacity:0.75, side:THREE.DoubleSide});
+  const fog = new THREE.Mesh(fogGeo, fogMat);
+  fog.rotation.x = -Math.PI/2;
+  fog.visible = P.fogOfWar;
+  group.add(fog);
+
+  world = {group, terrain, water, fog, dispose:()=>{
+    terrain.geometry.dispose(); terrain.material.dispose();
+    water.geometry.dispose(); water.material.dispose();
+    fog.geometry.dispose(); fog.material.dispose();
+  }};
+  scene.add(group);
+}
+const palettes = {
+  Spring: {forest:new THREE.Color(0x4f7d4e), jungle:new THREE.Color(0x2c7f50), savannah:new THREE.Color(0xb9ab6a), rock:new THREE.Color(0x7a787a), snow:new THREE.Color(0xf3f6fb)},
+  Summer: {forest:new THREE.Color(0x3f6d3e), jungle:new THREE.Color(0x1f6f43), savannah:new THREE.Color(0xb79a5a), rock:new THREE.Color(0x6d6b6d), snow:new THREE.Color(0xf2f4f7)},
+  Autumn: {forest:new THREE.Color(0x7b5a3a), jungle:new THREE.Color(0x6a7b3a), savannah:new THREE.Color(0xc58a4a), rock:new THREE.Color(0x6e6966), snow:new THREE.Color(0xf4f1ec)},
+  Winter: {forest:new THREE.Color(0x4a5a6a), jungle:new THREE.Color(0x3a5a4a), savannah:new THREE.Color(0xb5b1a1), rock:new THREE.Color(0x888b92), snow:new THREE.Color(0xfafcfe)},
+};
+
+// Particles: rain + snow
+let rain=null, snow=null;
+function buildRain(){
+  if (rain) { scene.remove(rain); rain.geometry.dispose(); rain.material.dispose(); rain=null; }
+  const geo = new THREE.BufferGeometry();
+  const N = 2500;
+  const arr = new Float32Array(N*3);
+  for (let i=0;i<N;i++){
+    arr[i*3+0]=(Math.random()-0.5)*P.size*0.9;
+    arr[i*3+1]=Math.random()*250+60;
+    arr[i*3+2]=(Math.random()-0.5)*P.size*0.9;
+  }
+  geo.setAttribute('position', new THREE.BufferAttribute(arr,3));
+  const mat = new THREE.PointsMaterial({color:0x9ecbff, size:1.2, opacity:0.75, transparent:true});
+  rain = new THREE.Points(geo, mat);
+  rain.visible = (P.weather==='Rain' || P.weather==='Storm');
+  scene.add(rain);
+}
+function buildSnow(){
+  if (snow) { scene.remove(snow); snow.geometry.dispose(); snow.material.dispose(); snow=null; }
+  const geo = new THREE.BufferGeometry();
+  const N = 1800;
+  const arr = new Float32Array(N*3);
+  for (let i=0;i<N;i++){
+    arr[i*3+0]=(Math.random()-0.5)*P.size*0.9;
+    arr[i*3+1]=Math.random()*260+70;
+    arr[i*3+2]=(Math.random()-0.5)*P.size*0.9;
+  }
+  geo.setAttribute('position', new THREE.BufferAttribute(arr,3));
+  const mat = new THREE.PointsMaterial({color:0xffffff, size:1.6, opacity:0.9, transparent:true});
+  snow = new THREE.Points(geo, mat);
+  snow.visible = (P.weather==='Snow');
+  scene.add(snow);
+}
+buildRain(); buildSnow();
+
+// GUI
+const gui = new GUI({title:'World Controls'});
+gui.add(P,'timeOfDay',0,1,0.001).name('Time (Day→Night)').onChange(()=>{
+  skyMat.uniforms.t.value = P.timeOfDay;
+  // sun tint/intensity
+  const k = 1.0 - Math.max(0, (P.timeOfDay-0.7)*1.4);
+  sun.intensity = 1.2 + k*1.4;
+});
+gui.add(P,'season', ['Spring','Summer','Autumn','Winter']).onChange(()=>rebuild());
+gui.add(P,'weather', ['Clear','Rain','Snow','Storm']).onChange(()=>{
+  rain.visible = (P.weather==='Rain' || P.weather==='Storm');
+  snow.visible = (P.weather==='Snow');
+  clouds.material.opacity = (P.weather==='Clear')?0.10: (P.weather==='Storm'?0.28:0.18);
+});
+gui.add(P,'fogOfWar').name('Mystery Zones').onChange(v=>{ if(world) world.fog.visible=v; });
+
+// Build
+rebuild(); fit();
+
+// Animate
+let tPrev = performance.now();
+function loop(now){
+  const dt = Math.min(0.033, (now - tPrev)/1000); tPrev = now;
+
+  // drift clouds
+  clouds.position.x = Math.sin(now*0.00006)*60;
+  clouds.position.z = -100 + Math.cos(now*0.00005)*40;
+
+  // weather anim
+  if (rain && rain.visible){
+    const p = rain.geometry.attributes.position;
+    for (let i=0;i<p.count;i++){
+      let y = p.getY(i) - 240*dt - Math.random()*30*dt;
+      if (y<40) y = 320;
+      p.setY(i, y);
+    }
+    p.needsUpdate = true;
+  }
+  if (snow && snow.visible){
+    const p = snow.geometry.attributes.position;
+    for (let i=0;i<p.count;i++){
+      let y = p.getY(i) - 80*dt - Math.random()*20*dt;
+      let x = p.getX(i) + Math.sin(now*0.0005 + i)*3*dt;
+      let z = p.getZ(i) + Math.cos(now*0.0004 + i)*2*dt;
+      if (y<45) y = 320;
+      p.setY(i, y); p.setX(i, x); p.setZ(i, z);
+    }
+    p.needsUpdate = true;
+  }
+
+  controls.update();
+  renderer.render(scene, camera);
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// Helpers
+function smoothstep(a,b,x){ const t=Math.min(1,Math.max(0,(x-a)/(b-a))); return t*t*(3-2*t); }
+</script>
+</body>
+</html>
