@@ -18,6 +18,8 @@
 <div id="hud">Clans of the Wild — Mobile Viewer<br/>Pinch to zoom • Drag to look • Two-finger drag to pan</div>
 <div id="hint">Tap panel → change Season / Weather / Time</div>
 <canvas id="c"></canvas>
+
+<script type="module">
 <script>
   // Show JS errors on the page
   (function(){
@@ -30,7 +32,6 @@
     window.addEventListener('unhandledrejection',ev=>{ log('Promise rejection: '+ev.reason); });
   })();
 </script>
-<script type="module">
 import * as THREE from 'https://unpkg.com/three@0.157.0/build/three.module.js';
 import {OrbitControls} from 'https://unpkg.com/three@0.157.0/examples/jsm/controls/OrbitControls.js';
 import GUI from 'https://cdn.jsdelivr.net/npm/lil-gui@0.18/+esm';
